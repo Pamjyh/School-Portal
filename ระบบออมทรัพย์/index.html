@@ -731,8 +731,8 @@ body{font-family:'Sarabun','Helvetica Neue',Helvetica,Arial,sans-serif;backgroun
     <div class="step">
       <div class="snum">2</div>
       <div class="sbody">
-        <h4>พิมพ์ชื่อหรือนามสกุลบุตรหลาน</h4>
-        <p>พิมพ์แค่ส่วนหนึ่งก็ได้ เช่น "สมชาย" หรือ "ใจดี"<br>ถ้าพบหลายคนชื่อคล้าย ระบบจะแสดงให้เลือก</p>
+        <h4>พิมพ์ชื่อ-นามสกุลเต็มของบุตรหลาน</h4>
+        <p>ต้องพิมพ์ชื่อ-นามสกุลให้ตรงกับที่ลงทะเบียนไว้ เช่น "สมชาย ใจดี"<br>(เพื่อความเป็นส่วนตัว ระบบจะไม่แสดงผลถ้าพิมพ์แค่บางส่วนของชื่อ)</p>
       </div>
     </div>
     <div class="step">
@@ -864,9 +864,9 @@ body{font-family:'Sarabun','Helvetica Neue',Helvetica,Arial,sans-serif;backgroun
     <!-- ค้นหา -->
     <div style="background:#fff;border-radius:14px;border:1px solid var(--ibdr);padding:1.25rem;margin-bottom:16px">
       <div style="font-family:'Mitr',sans-serif;font-size:15px;margin-bottom:4px">🔍 ค้นหาด้วยชื่อ-สกุลบุตรหลาน</div>
-      <div style="font-size:13px;color:var(--ts);margin-bottom:14px">พิมพ์ชื่อหรือนามสกุล ไม่ต้องครบก็ได้</div>
+      <div style="font-size:13px;color:var(--ts);margin-bottom:14px">พิมพ์ชื่อ-นามสกุลเต็ม ให้ตรงกับที่ลงทะเบียนไว้</div>
       <div style="display:flex;gap:8px">
-        <input class="finp" id="parent-search" placeholder="เช่น สมชาย หรือ ใจดี"
+        <input class="finp" id="parent-search" placeholder="เช่น สมชาย ใจดี (ชื่อ-นามสกุลเต็ม)"
           style="margin-bottom:0;flex:1"
           onkeydown="if(event.key==='Enter')searchParent()">
         <button onclick="searchParent()"
@@ -1175,7 +1175,7 @@ body{font-family:'Sarabun','Helvetica Neue',Helvetica,Arial,sans-serif;backgroun
 
 <script>
 // ===== CONFIG =====
-var API = 'https://script.google.com/macros/s/AKfycbyXe59e_S9zJmGsvPAbXr812HD79X83o1d9CjlN1OSP1V-c2NCwC8Cs1U4MZl5YxviL0w/exec';
+var API = 'https://script.google.com/macros/s/AKfycbzcmzhetINd2y62u-Y6uswl8S4fzR6C3_kLNexTv-_mnLKSBvbOkRQs7UgMwpmjKeXq/exec';
 // รหัสผ่านไม่ได้เก็บในไฟล์ — ตรวจสอบที่ server เท่านั้น
 var _pw = null;  // session password (เก็บใน memory เท่านั้น)
 // ==================
@@ -1243,9 +1243,17 @@ function _apiShowBar(on) {
 }
 
 // ===== API =====
-// SEC-1 fix: actions ที่มี password ส่งเป็น POST body (ไม่ปรากฏใน URL / browser history / server log)
+// SEC-1 fix: actions ที่มี password/PII ส่งเป็น POST body เพื่อไม่ให้ข้อมูลอยู่ใน query-string URL
+// F2 fix (Codex scrutinize 2026-08-26): getStudentByName ไม่มี password จึงเคยหลุดไปทาง GET เดิม
+// แต่หลัง F1-savings fix (2026-08-25) ผู้ปกครองต้องพิมพ์ชื่อ-นามสกุลเต็ม ทำให้ PII (ชื่อเต็มเด็ก) ไปอยู่ใน
+// URL query string ซึ่งอาจถูกบันทึกใน access/proxy/diagnostic log โดยไม่จำเป็น — บังคับ POST ให้ action นี้
+// ด้วยแม้ไม่มี password เพื่อไม่ให้ชื่อเต็มหลุดไป URL โดยไม่ต้องเพิ่มขั้นตอน/รหัสผ่านให้ผู้ปกครองเลย
+// (comment fix ตาม Codex review รอบถัดมา: POST รับประกันได้แค่ว่าไม่อยู่ใน URL/query-string/browser history
+// เท่านั้น ไม่ใช่การรับประกันว่า "จะไม่ถูก log" ทุกกรณี — instrumentation บางชนิดยังอาจบันทึก request body ได้)
+var POST_ONLY_ACTIONS = { getStudentByName: true };
 function apiCall(params, cb) {
   var hasPassword = Object.prototype.hasOwnProperty.call(params, 'password');
+  var forcePost = !!POST_ONLY_ACTIONS[params.action];
   var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
   var tid  = ctrl ? setTimeout(function(){ ctrl.abort(); }, 20000) : null;
 
@@ -1253,8 +1261,8 @@ function apiCall(params, cb) {
   _apiShowBar(true);
 
   var fetchOpts, url;
-  if (hasPassword) {
-    // POST — password อยู่ใน body เท่านั้น ไม่โดน log
+  if (hasPassword || forcePost) {
+    // POST — password/PII ไม่อยู่ใน URL; ลดการติด access/proxy log ที่บันทึก URL ตามปกติ
     var body = Object.keys(params).map(function(k){
       return encodeURIComponent(k)+'='+encodeURIComponent(params[k]);
     }).join('&');
@@ -1265,7 +1273,7 @@ function apiCall(params, cb) {
       body: body
     };
   } else {
-    // GET — ปลอดภัย ไม่มีข้อมูลส่วนตัว
+    // GET — ไม่มี password/PII ที่ระบุไว้ใน POST_ONLY_ACTIONS
     url = API+'?'+Object.keys(params).map(function(k){
       return encodeURIComponent(k)+'='+encodeURIComponent(params[k]);
     }).join('&');
@@ -2720,14 +2728,29 @@ function doPr() {
 
 // ===== PARENT =====
 var _parentSearchResult = null; // เก็บผลค้นหาล่าสุด ป้องกันแสดงผิดคนเมื่อชื่อซ้ำ
+// Codex F1 fix (2026-08-26, ตาม scrutinize รอบถัดมา): generation token กัน response ที่ยิงก่อนแต่มาถึงทีหลัง
+// (เพราะเน็ต/timing ไม่แน่นอน) ทับผลลัพธ์ของ action ล่าสุดที่ผู้ปกครองเพิ่งทำ — เดิม mutual-exclusion (self-scrutinize
+// รอบก่อน) แก้แค่ไม่ให้ 2 panel ซ้อนกัน แต่ไม่ได้กันข้อมูลผิดคนที่ Codex reproduce ได้จริงทั้งฝั่ง search และ select
+var _parentRequestSeq = 0;
 function searchParent() {
+  // Codex F1 fix (2026-08-26, ตาม review รอบถัดมา): increment ตั้งแต่บรรทัดแรกสุด ก่อน validate ชื่อว่าง —
+  // เดิม increment อยู่หลัง guard นี้ ทำให้กด "ค้นหา" ด้วยช่องว่างระหว่างที่คำค้นก่อนหน้ายังรอ response อยู่
+  // ไม่ถูกนับเป็น action ใหม่ (sequence ไม่ขยับ) พอ response เก่ามาถึงทีหลังจึงยังผ่าน guard ได้อยู่ดี เปิดผลเก่า
+  // กลับมาซ้อนกับข้อความ "กรุณาใส่ชื่อก่อน" ที่เพิ่งเกิด — ทุกครั้งที่กดค้นหาต้องนับเป็น action รุ่นใหม่เสมอ
+  // ไม่ว่า input จะผ่าน validation หรือไม่
+  var requestSeq = ++_parentRequestSeq;
   var name=document.getElementById('parent-search').value.trim();
-  if (!name) {showParentErr('กรุณาใส่ชื่อก่อน'); return;}
+  if (!name) {
+    document.getElementById('parent-loading').style.display='none';
+    showParentErr('กรุณาใส่ชื่อก่อน');
+    return;
+  }
   document.getElementById('parent-err').style.display='none';
   document.getElementById('parent-result').style.display='none';
   document.getElementById('parent-loading').style.display='block';
   _parentSearchResult = null;
   apiCall({action:'getStudentByName',name:name},function(r){
+    if (requestSeq !== _parentRequestSeq) return; // มี action ใหม่กว่าเกิดขึ้นแล้วระหว่างรอ — ทิ้ง response นี้เงียบๆ
     document.getElementById('parent-loading').style.display='none';
     if (!r.ok) {showParentErr(r.error); return;}
     _parentSearchResult = r; // เก็บไว้ใช้ตอน selectParentStudent
@@ -2750,19 +2773,33 @@ function searchParent() {
 }
 function selectParentStudent(id) {
   document.getElementById('parent-multi').style.display='none';
+  // Codex F2 fix (2026-08-26): ล้าง error เก่าทุกครั้งที่เริ่ม action ใหม่ — เดิมถ้าครั้งก่อน error ค้างไว้
+  // (`#parent-err` display:block) แล้วครั้งนี้โหลดสำเร็จ ข้อความ "โหลดไม่สำเร็จ" จากรอบก่อนจะยังค้างซ้อนอยู่
+  // เหนือโปรไฟล์ที่โหลดสำเร็จจริง ทำให้ผู้ใช้ไม่แน่ใจว่าข้อมูลที่เห็นเชื่อถือได้หรือไม่
+  document.getElementById('parent-err').style.display='none';
   // ใช้ข้อมูลจาก result ที่เก็บไว้ ไม่ query ซ้ำด้วย name (ป้องกันชื่อซ้ำ)
   if (_parentSearchResult) {
     var stu = _parentSearchResult.students.filter(function(s){return String(s.id)===String(id);})[0];
     if (stu) {
       // โหลด history เฉพาะคนนี้ด้วย id
+      // F1 fix (Codex scrutinize 2026-08-26): เดิมถ้า request ล้มเหลว (timeout/network/studentId
+      // ไม่ตรง) โค้ดจะข้าม if(r.ok...) เงียบๆ แล้วเรียก showParentSingle(stu,[]) เสมอ ซึ่ง showParentSingle
+      // ตีความ history ว่างเป็น "ยังไม่มีประวัติธุรกรรม" — ผู้ปกครองเห็นข้อความเชิงสรุปที่ดูสำเร็จ ทั้งที่จริง
+      // คือ backend error ต้องแยก error ออกจาก "มีจริงแต่ไม่มีรายการ" ให้ชัด และ backend คืน history ที่กรอง
+      // ตาม target.id ให้แล้ว (ดู getStudentByName ใน Code.gs) จึงไม่ต้อง filter/fallback ซ้ำฝั่งนี้อีก
+      var requestSeq = ++_parentRequestSeq;
       apiCall({action:'getStudentByName',name:stu.name,studentId:id},function(r){
-        var history = [];
-        if (r.ok && r.history) {
-          // กรอง history ให้ตรงกับ id นี้เท่านั้น
-          history = r.history.filter(function(t){return !t.studentId||String(t.studentId)===String(id);});
-          if (!history.length) history = r.history; // fallback ถ้า backend ไม่ส่ง studentId
+        if (requestSeq !== _parentRequestSeq) return; // มี action ใหม่กว่าเกิดขึ้นแล้วระหว่างรอ — ทิ้ง response นี้เงียบๆ
+        if (!r || !r.ok) {
+          // self-scrutinize fix (2026-08-26): เดิม branch นี้ไม่ซ่อน parent-single ทำให้ถ้า request อีกใบ
+          // (จากการคลิกการ์ดอื่น/ดับเบิลคลิกก่อนหน้า) สำเร็จมาถึงก่อน/หลังสลับกัน จะเห็น parent-multi
+          // (ที่เพิ่งเปิดกลับมา) กับ parent-single ซ้อนกันพร้อมกันบนจอ — บังคับซ่อน single ทุกครั้งที่โชว์ error
+          document.getElementById('parent-single').style.display='none';
+          document.getElementById('parent-multi').style.display='block';
+          showParentErr((r && r.error) || 'โหลดประวัติไม่สำเร็จ กรุณาลองใหม่');
+          return;
         }
-        showParentSingle(stu, history);
+        showParentSingle(stu, r.history || []);
       });
       return;
     }
@@ -2771,6 +2808,9 @@ function selectParentStudent(id) {
   showParentErr('ไม่พบข้อมูล กรุณาค้นหาใหม่');
 }
 function showParentSingle(stu,history) {
+  // self-scrutinize fix (2026-08-26): ซ่อน parent-multi ทุกครั้งที่โชว์ single เพื่อกัน race เดียวกันกับ
+  // ด้านบน — ถ้า response ของการ์ดอื่นที่ error มาถึงทีหลังแล้วเปิด parent-multi ไว้ค้าง จะได้ไม่ซ้อนกัน
+  document.getElementById('parent-multi').style.display='none';
   document.getElementById('parent-single').style.display='block';
   document.getElementById('ps-name').textContent=stu.name;
   document.getElementById('ps-grade').textContent='ชั้น '+stu.grade;
@@ -2797,11 +2837,16 @@ function showParentSingle(stu,history) {
   }).join('');
 }
 function resetParent() {
+  // Codex F1 fix (2026-08-26): invalidate request ที่ยังค้างอยู่ (ถ้ามี) ก่อนล้างหน้า ป้องกัน response เก่า
+  // ที่มาถึงหลังกด reset แล้วเปิดผลลัพธ์ของ action ก่อนหน้ากลับมาแสดงทับหน้าที่ว่างเปล่าที่ผู้ใช้กำลังดูอยู่
+  _parentRequestSeq++;
+  _parentSearchResult = null;
   document.getElementById('parent-search').value='';
   document.getElementById('parent-result').style.display='none';
   document.getElementById('parent-err').style.display='none';
   document.getElementById('parent-single').style.display='none';
   document.getElementById('parent-multi').style.display='none';
+  document.getElementById('parent-loading').style.display='none';
   document.getElementById('parent-search').focus();
 }
 function showParentErr(msg) {

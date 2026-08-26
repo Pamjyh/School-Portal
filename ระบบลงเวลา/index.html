@@ -315,7 +315,11 @@ function closeModal(){stopFaceScan();document.querySelectorAll('.overlay').forEa
 function esc(s){return String(s||'').replace(/[&<>"']/g,function(m){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m];});}
 const ADMIN_PW_KEY='thatime_admin_hash';
 async function hashPw(pw){const buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(pw));return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');}
-function getH(){return localStorage.getItem(ADMIN_PW_KEY)||'';}
+// P0-03 fix (2026-08-24, ตาม Codex review comment): ย้าย admin hash cache จาก localStorage (persist ข้ามเปิด/ปิด tab)
+// ไปเป็น sessionStorage (หมดเมื่อปิด tab) ลด window ที่ hash ค้างอยู่ให้ XSS อ่านได้ — Supabase ยังเป็น source of truth เสมอ
+// (ดู comment ใน doAdminLogin()) นี่คือการลด persistence ไม่ใช่การแก้ credential model ทั้งหมด (ยังเป็น bearer hash ที่ script
+// ใน origin นี้อ่านได้ระหว่าง session อยู่ — งาน server-issued session/central auth เป็นงานถัดไปตามที่ Codex เสนอ)
+function getH(){return sessionStorage.getItem(ADMIN_PW_KEY)||'';}
 
 function photoImg(emp, w='100%', h='100%', radius='0'){
   return emp.photo
@@ -324,6 +328,9 @@ function photoImg(emp, w='100%', h='100%', radius='0'){
 }
 
 async function boot(){
+  // P0-03 fix: ล้าง legacy admin hash ที่เคยเก็บใน localStorage (เวอร์ชันก่อนหน้า) ทุกครั้งที่เริ่มโหลดหน้าใหม่
+  // เพื่อไม่ให้ hash เก่าค้างอยู่ถาวรข้ามอุปกรณ์/เวลาอีกต่อไป — ไม่กระทบ session ปัจจุบันเพราะตอนนี้ใช้ sessionStorage แล้ว
+  try{localStorage.removeItem(ADMIN_PW_KEY);}catch(e){}
   const {data:s}=await sb.from('settings').select('id,school_name,office_lat,office_lng,radius,holidays,extra_workdays,updated_at').single();
   settingsCache=s||{school_name:'ระบบลงเวลาปฏิบัติงาน โรงเรียนบ้านท่าชะอม',office_lat:13.7563,office_lng:100.5018,radius:200};
   document.getElementById('navTitle').textContent=settingsCache.school_name;
@@ -499,10 +506,13 @@ function openAdminLogin(){
   const overlay=document.createElement('div');
   overlay.className='overlay';
   overlay.onclick=e=>{if(e.target===overlay)closeModal();};
+  // P0-03 fix F2 (Codex scrutinize 2026-08-24): เลิกเช็ค sessionStorage ตรงนี้ — client เดาไม่ได้ว่าเป็นการตั้งรหัสครั้งแรกจริงหรือไม่
+  // (Supabase settings.admin_hash คือ source of truth เสมอ ไม่ใช่ local storage ใดๆ) ข้อความเดิมที่ผัน 2 แบบเคยบอกผิดทุกแท็บใหม่
+  // ทำให้ admin ที่ตั้งรหัสแล้วเข้าใจผิดว่าต้องตั้งใหม่ ทั้งที่ RPC ต้องการรหัสเดิม — ใช้ข้อความเดียวเสมอแทน
   overlay.innerHTML=`<div class="modal"><div class="modal-handle"></div>
     <div style="text-align:center;margin-bottom:20px;"><div style="font-size:24px;margin-bottom:8px;">⚙️</div>
     <div style="font-size:20px;font-weight:700;">Admin</div>
-    <div style="font-size:13px;color:var(--muted);margin-top:4px;">${localStorage.getItem(ADMIN_PW_KEY)?'ใส่รหัสผ่านผู้ดูแลระบบ':'ตั้งรหัสผ่านใหม่ (ครั้งแรก)'}</div></div>
+    <div style="font-size:13px;color:var(--muted);margin-top:4px;">ใส่รหัสผ่านผู้ดูแลระบบ</div></div>
     <div class="modal-err" id="adminErr"></div>
     <input class="modal-input" id="adminPass" type="password" placeholder="รหัสผ่าน">
     <button class="btn-in" style="background:var(--primary);" onclick="doAdminLogin()">เข้าสู่ระบบ</button>
@@ -522,10 +532,17 @@ async function doAdminLogin(){
   // admin_set_hash(new=h, old=h): NULL→ตั้งใหม่ได้; stored=h→ผ่าน; stored≠h→false
   const {data:ok,error}=await sb.rpc('admin_set_hash',{p_new_hash:h,p_old_hash:h});
   if(error||!ok){if(errEl)errEl.textContent='รหัสผ่านไม่ถูกต้อง';return;}
-  localStorage.setItem(ADMIN_PW_KEY,h); // อัปเดต local cache ให้ตรงกับ Supabase
+  // P0-03 fix: sessionStorage แทน localStorage (หมดเมื่อปิด tab) — อัปเดต local cache ให้ตรงกับ Supabase
+  sessionStorage.setItem(ADMIN_PW_KEY,h);
+  try{localStorage.removeItem(ADMIN_PW_KEY);}catch(e){} // เผื่อมี legacy key ค้างจากเวอร์ชันก่อนหน้า
   adminUser={name:'ผู้ดูแลระบบ'};closeModal();renderAdmin();
 }
-function logoutAdmin(){adminUser=null;boot();}
+function logoutAdmin(){
+  // P0-03 fix: ล้าง admin hash cache ทั้ง sessionStorage (ที่ใช้จริงตอนนี้) และ localStorage (legacy) ตอน logout
+  try{sessionStorage.removeItem(ADMIN_PW_KEY);}catch(e){}
+  try{localStorage.removeItem(ADMIN_PW_KEY);}catch(e){}
+  adminUser=null;boot();
+}
 
 function renderAdmin(){
   if(clockTimer) clearInterval(clockTimer);
@@ -1356,6 +1373,10 @@ function filterLeaveList(){
   if(wrap) wrap.innerHTML = renderLeaveTable(window._lvData||[], f);
 }
 
+// P0-03 fix (2026-08-24, ตาม Codex review comment): escape ทุกค่าที่มาจาก row ก่อน interpolate ลง innerHTML
+// (name, username, leave_type, start/end date, days, reason, status fallback) ผ่าน esc() ที่มีอยู่แล้วในไฟล์ (บรรทัด 315)
+// และย้าย l.id ออกจาก inline JS string (เดิม onclick="approveLeave('${l.id}',...)") ไปเป็น data-id attribute
+// อ่านผ่าน this.closest('[data-id]').dataset.id แทน — กัน id (ปกติเป็น uuid แต่ไม่เชื่อ) หลุดเข้า JS string context
 function renderLeaveTable(lvs, filter){
   const rows = filter==='all' ? lvs : lvs.filter(l=>l.status===filter);
   if(!rows.length) return '<div class="empty" style="padding:24px;text-align:center;color:var(--faint);">ไม่มีข้อมูล</div>';
@@ -1363,21 +1384,24 @@ function renderLeaveTable(lvs, filter){
   const statusTag   = {pending:'tag-pending', approved:'tag-approved', rejected:'tag-rejected'};
   return `<div style="overflow-x:auto;"><table class="tbl">
     <thead><tr><th>พนักงาน</th><th>ประเภทการลา</th><th>ช่วงวันที่</th><th>วัน</th><th>เหตุผล</th><th>สถานะ</th><th>อนุมัติ</th></tr></thead>
-    <tbody>${rows.map(l=>`<tr>
-      <td><b>${l.employees?.name||'-'}</b><br><span style="font-size:11px;color:var(--faint);">${l.employees?.username||'-'}</span></td>
-      <td><span class="tag tag-leave">${l.leave_type}</span></td>
-      <td style="font-size:12px;white-space:nowrap;">${l.start_date} ${l.start_date!==l.end_date?'– '+l.end_date:''}</td>
-      <td style="text-align:center;font-weight:700;">${l.days}</td>
-      <td style="font-size:12px;max-width:160px;">${l.reason||'-'}</td>
-      <td><span class="tag ${statusTag[l.status]||''}">${statusLabel[l.status]||l.status}</span></td>
-      <td style="white-space:nowrap;">
+    <tbody>${rows.map(l=>{
+      const dateRange = esc(l.start_date) + (l.start_date!==l.end_date ? ' – '+esc(l.end_date) : '');
+      return `<tr>
+      <td><b>${esc(l.employees?.name||'-')}</b><br><span style="font-size:11px;color:var(--faint);">${esc(l.employees?.username||'-')}</span></td>
+      <td><span class="tag tag-leave">${esc(l.leave_type)}</span></td>
+      <td style="font-size:12px;white-space:nowrap;">${dateRange}</td>
+      <td style="text-align:center;font-weight:700;">${esc(String(l.days))}</td>
+      <td style="font-size:12px;max-width:160px;">${esc(l.reason||'-')}</td>
+      <td><span class="tag ${statusTag[l.status]||''}">${esc(statusLabel[l.status]||l.status)}</span></td>
+      <td style="white-space:nowrap;" data-id="${esc(l.id)}">
         ${l.status==='pending'?`
-          <button class="btn-blue" style="padding:5px 12px;font-size:11px;margin-right:4px;" onclick="approveLeave('${l.id}','approved')">อนุมัติ</button>
-          <button class="btn-ghost" style="font-size:11px;" onclick="approveLeave('${l.id}','rejected')">ปฏิเสธ</button>
+          <button class="btn-blue" style="padding:5px 12px;font-size:11px;margin-right:4px;" onclick="approveLeave(this.closest('[data-id]').dataset.id,'approved')">อนุมัติ</button>
+          <button class="btn-ghost" style="font-size:11px;" onclick="approveLeave(this.closest('[data-id]').dataset.id,'rejected')">ปฏิเสธ</button>
         `:'<span style="font-size:11px;color:var(--faint);">—</span>'}
-        <button onclick="delLeave('${l.id}')" style="background:none;border:none;color:var(--red-text);font-size:14px;cursor:pointer;padding:2px 6px;margin-left:4px;" title="ลบใบลานี้">🗑️</button>
+        <button onclick="delLeave(this.closest('[data-id]').dataset.id)" style="background:none;border:none;color:var(--red-text);font-size:14px;cursor:pointer;padding:2px 6px;margin-left:4px;" title="ลบใบลานี้">🗑️</button>
       </td>
-    </tr>`).join('')}
+    </tr>`;
+    }).join('')}
     </tbody></table></div>`;
 }
 
@@ -1410,7 +1434,11 @@ function csvDownload(rows, filename){
   // rows = array of objects, all same keys
   if(!rows||!rows.length){toast('❌ ไม่มีข้อมูล','err');return;}
   const cols=Object.keys(rows[0]);
-  const escape=v=>{const s=String(v??'');return s.includes(',')||s.includes('"')||s.includes('\n')?'"'+s.replace(/"/g,'""')+'"':s;};
+  // ป้องกัน CSV/Formula Injection (OWASP): ถ้าค่าขึ้นต้นด้วย = + - @ tab หรือ CR
+  // Excel/Sheets อาจตีความเป็นสูตรตอนเปิดไฟล์ที่ export ออกไป ยกเว้นตัวเลขล้วน
+  // (รวมติดลบ/ทศนิยม) เพื่อไม่ให้ข้อมูลตัวเลขที่ถูกต้องกลายเป็นข้อความ
+  const csvGuard=s=>(/^[=+\-@\t\r]/.test(s)&&!/^[+-]?\d+(\.\d+)?$/.test(s))?("'"+s):s;
+  const escape=v=>{const s=csvGuard(String(v??''));return s.includes(',')||s.includes('"')||s.includes('\n')?'"'+s.replace(/"/g,'""')+'"':s;};
   const csv=[cols.map(escape).join(','),...rows.map(r=>cols.map(k=>escape(r[k])).join(','))].join('\r\n');
   const blob=new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8'});
   const url=URL.createObjectURL(blob);

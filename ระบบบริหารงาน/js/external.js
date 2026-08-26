@@ -585,8 +585,17 @@ function exportExtCSV(){
     var cname = (t.external_categories && t.external_categories.name) ? t.external_categories.name : '';
     rows.push([t.transaction_date, t.type, cname, t.note||'', t.amount]);
   });
+  // ป้องกัน CSV/Formula Injection (OWASP): ถ้าค่าขึ้นต้นด้วย = + - @ tab หรือ CR
+  // Excel/Sheets อาจตีความเป็นสูตรได้แม้ครอบด้วย "" แล้วก็ตาม ยกเว้นตัวเลขล้วน
+  // (รวมติดลบ/ทศนิยม) เพื่อไม่ให้จำนวนเงินติดลบที่ถูกต้องกลายเป็นข้อความ
+  function csvGuard(s){
+    if(/^[=+\-@\t\r]/.test(s) && !/^[+-]?\d+(\.\d+)?$/.test(s)){
+      s = "'" + s;
+    }
+    return s;
+  }
   var csv = rows.map(function(r){
-    return r.map(function(v){ return '"'+(String(v||'')).replace(/"/g,'""')+'"'; }).join(',');
+    return r.map(function(v){ return '"'+csvGuard(String(v||'')).replace(/"/g,'""')+'"'; }).join(',');
   }).join('\n');
   var blob = new Blob(['﻿'+csv], { type:'text/csv;charset=utf-8' });
   var a = document.createElement('a');

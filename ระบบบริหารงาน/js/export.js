@@ -5,9 +5,19 @@
 // helper: สร้าง CSV แล้ว download (UTF-8 BOM เพื่อให้ Excel อ่านภาษาไทยได้)
 function downloadCSV(filename, rows){
   var BOM = '﻿';
+  // ป้องกัน CSV/Formula Injection (OWASP): ถ้าค่าขึ้นต้นด้วย = + - @ tab หรือ CR
+  // โปรแกรมสเปรดชีต (Excel/Sheets) อาจตีความเป็นสูตรตอนเปิดไฟล์ที่ export ออกไป
+  // ยกเว้นตัวเลขล้วน (รวมติดลบ/ทศนิยม) เพื่อไม่ให้จำนวนเงินติดลบที่ถูกต้องกลายเป็นข้อความ
+  function csvGuard(s){
+    if(/^[=+\-@\t\r]/.test(s) && !/^[+-]?\d+(\.\d+)?$/.test(s)){
+      s = "'" + s;
+    }
+    return s;
+  }
   var csv = BOM + rows.map(function(row){
     return row.map(function(cell){
       var s = (cell === null || cell === undefined) ? '' : String(cell);
+      s = csvGuard(s);
       // ถ้ามี comma, newline หรือ quote → ครอบด้วย ""
       if(s.includes(',') || s.includes('\n') || s.includes('"')){
         s = '"' + s.replace(/"/g,'""') + '"';

@@ -213,11 +213,15 @@ function styleHeader(sheet, cols) {
 // ============================================================
 // ค้นหานักเรียนด้วยชื่อ (สำหรับผู้ปกครอง)
 function getStudentByName(p) {
-  const keyword = (p.name || '').trim().toLowerCase();
+  // F1 fix (Pam decision 2026-08-25, scrutinize F1 ของแผน central-auth รอบถัดไป): เปลี่ยนจาก
+  // substring match เป็น exact full-name match — เดิมพิมพ์แค่บางส่วนของชื่อ (เช่น "สม") ก็เจอทุกคนที่มี
+  // คำนั้นอยู่ในชื่อ ทำให้ใครก็ได้ที่เดาบางส่วนของชื่อถูกไล่ดูยอดออม/ประวัติธุรกรรมของเด็กคนอื่นได้ง่ายเกินไป
+  // Pam ตัดสินใจให้ผู้ปกครองพิมพ์ชื่อ-นามสกุลเต็มแทน ไม่ต้องยืนยันตัวตนเพิ่มเพราะ endpoint นี้ read-only ล้วน
+  // (รับทราบและยอมรับความเสี่ยงที่เหลือแล้ว — ดู CODEX_CLAUDE_REVIEW.md 2026-08-25)
+  const norm = s => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  const keyword = norm(p.name);
   if (!keyword) return { ok: false, error: 'กรุณาใส่ชื่อ' };
-  // F3 fix (scrutinize 2026-08-07): endpoint นี้ไม่ต้องรหัสผ่าน (ผู้ปกครองใช้) เดิมไม่มีความยาวขั้นต่ำ
-  // คำค้นสั้นเกินไป (เช่น 1 ตัวอักษร) จะได้ชื่อ+ยอดออมของนักเรียนเกือบทั้งโรงเรียนกลับมาในคำขอเดียว
-  if (keyword.length < 2) return { ok: false, error: 'กรุณาพิมพ์ชื่ออย่างน้อย 2 ตัวอักษร' };
+  if (keyword.length < 2) return { ok: false, error: 'กรุณาพิมพ์ชื่อ-นามสกุลเต็ม' };
 
   const ss = SpreadsheetApp.openById(SHEET_ID);
   const studSheet = ss.getSheetByName('นักเรียน');
@@ -236,13 +240,12 @@ function getStudentByName(p) {
 
   const balances = calcAllBalances(ss);
 
-  // ค้นหาชื่อที่ตรงกัน (ค้นแบบ contains ไม่ต้องตรงทั้งหมด)
+  // F1 fix: exact match เท่านั้น (ไม่ใช่ contains แบบเดิม)
   const matches = allData.slice(1)
     .filter(r => {
       if (!r[siId]) return false;
       if (siStatus >= 0 && String(r[siStatus]) === 'จบการศึกษา') return false;
-      const name = String(r[siName] || '').toLowerCase();
-      return name.includes(keyword);
+      return norm(r[siName]) === keyword;
     })
     .map(r => ({
       id:      String(r[siId]),
@@ -251,12 +254,23 @@ function getStudentByName(p) {
       balance: balances[String(r[siId])] || 0
     }));
 
-  if (!matches.length) return { ok: false, error: 'ไม่พบนักเรียนชื่อ "' + p.name + '"' };
-  // F3 fix (scrutinize 2026-08-07): จำกัดจำนวนผลลัพธ์ — กันคำค้นกว้างๆ (เช่นพบพ้องกันหลายสิบคน) ดึงยอดออมออกมาได้เยอะเกินจำเป็น
-  if (matches.length > 15) return { ok: false, error: 'พบนักเรียนหลายคนเกินไป (' + matches.length + ' คน) กรุณาพิมพ์ชื่อให้เจาะจงมากขึ้น' };
+  if (!matches.length) return { ok: false, error: 'ไม่พบนักเรียนชื่อ "' + p.name + '" — กรุณาพิมพ์ชื่อ-นามสกุลเต็มให้ตรงกับที่ลงทะเบียนไว้' };
+  if (matches.length > 15) return { ok: false, error: 'พบนักเรียนหลายคนเกินไป (' + matches.length + ' คน) กรุณาติดต่อโรงเรียน' };
 
-  // ถ้าเจอคนเดียว ดึงประวัติธุรกรรมมาด้วย
-  if (matches.length === 1) {
+  // F1 fix ต่อเนื่อง: เดิม endpoint นี้ไม่เคยรับ/ใช้ p.studentId เลย ทำให้ตอนผู้ปกครองคลิกเลือกคนใดคนหนึ่ง
+  // จากรายชื่อที่ชื่อ-นามสกุลตรงกันมากกว่า 1 คน (กรณีหายาก) ประวัติธุรกรรมที่ได้กลับมาผิดคนหรือว่างเปล่า
+  // แก้ให้เลือก target จาก matches ที่ผ่าน exact-name แล้วเท่านั้นตาม studentId (ไม่ query จาก studentId
+  // อย่างเดียวโดยไม่เช็คชื่อ — กัน studentId ที่เดาได้กลายเป็นช่องทางข้าม name gate)
+  let target = null;
+  if (p.studentId) {
+    const picked = matches.filter(m => String(m.id) === String(p.studentId));
+    if (!picked.length) return { ok: false, error: 'ไม่พบข้อมูลนักเรียนที่เลือก กรุณาค้นหาใหม่' };
+    target = picked[0];
+  } else if (matches.length === 1) {
+    target = matches[0];
+  }
+
+  if (target) {
     const txSheet = ss.getSheetByName('ธุรกรรม');
     let history = [];
     if (txSheet) {
@@ -271,7 +285,7 @@ function getStudentByName(p) {
       const tiAmt   = findTH(['จำนวนเงิน']);
       const tiDate  = findTH(['วันที่']);
       history = txSheet.getDataRange().getValues().slice(1)
-        .filter(r => r[0] && String(r[tiStu]) === matches[0].id)
+        .filter(r => r[0] && String(r[tiStu]) === target.id)
         .map(r => ({
           type:   String(r[tiType] || ''),
           amount: parseFloat(r[tiAmt]) || 0,
